@@ -61,6 +61,47 @@ if PYTHON_VERSION == 2:
     from urllib import urlretrieve
 elif PYTHON_VERSION == 3:
     from urllib.request import urlretrieve
+# extra imports for hdf5 compatibility
+import h5py
+import io
+from PIL import Image
+
+
+def get_h5_struct(path):
+    data = []
+    group = []
+    hf = h5py.File(path, 'r')
+
+    def visit_h5_file(name, obj):
+        if isinstance(obj, h5py.Dataset):
+            data.append(name)
+        elif isinstance(obj, h5py.Group):
+            group.append(name)
+    
+    hf.visititems(visit_h5_file)
+    
+    struct = {g: [] for g in group}
+    for d in data:
+        group_name = d.rsplit('/', 1)[0]  # Extract the group name from the dataset path
+        if group_name in struct:
+            struct[group_name].append(d)
+
+    return hf, struct
+
+
+def get_h5_file(hf, path):
+    if path.endswith('.jpg'):
+        # saved the image as raw binary, need to convert to image
+        rtn = Image.open(io.BytesIO(np.array(hf[path])))
+    elif path.endswith('.json'):
+        # saved as a dataset string, need to convert to json dict
+        rtn = json.loads(np.array(hf[path]).tobytes().decode('utf-8'))
+    elif path.endswith('.npy'):
+        # saved as array, no need to convert
+        rtn = np.array(hf[path])
+    else:
+        raise ValueError('Unknown file type: {}'.format(path))
+    return rtn
 
 
 def _isArrayLike(obj):
@@ -68,7 +109,7 @@ def _isArrayLike(obj):
 
 
 class COCO:
-    def __init__(self, annotation_file=None):
+    def __init__(self, annotation_file=None, h5_file=None):
         """
         Constructor of Microsoft COCO helper class for reading and visualizing annotations.
         :param annotation_file (str): location of annotation file
@@ -78,10 +119,18 @@ class COCO:
         # load dataset
         self.dataset,self.anns,self.cats,self.imgs = dict(),dict(),dict(),dict()
         self.imgToAnns, self.catToImgs = defaultdict(list), defaultdict(list)
+        if not h5_file == None:
+            print('indexing HDF5 file...')
+            tic = time.time()
+            self.hf, self.struct = get_h5_struct(h5_file)
+            print('Done (t={:0.2f}s)'.format(time.time()- tic))
         if not annotation_file == None:
             print('loading annotations into memory...')
             tic = time.time()
-            dataset = json.load(open(annotation_file, 'r'))
+            if h5_file == None:
+                dataset = json.load(open(annotation_file, 'r'))
+            else:
+                dataset = get_h5_file(self.hf, annotation_file)
             assert type(dataset)==dict, 'annotation file format {} not supported'.format(type(dataset))
             print('Done (t={:0.2f}s)'.format(time.time()- tic))
             self.dataset = dataset
